@@ -1,3 +1,4 @@
+from base64 import b64encode
 from collections import defaultdict
 import functools
 
@@ -9,11 +10,10 @@ from openai import AsyncOpenAI as OpenAI
 
 app = FastAPI(title="Агентный уровень LLM-переводчика")
 
-OPENAI_API_URL = "http://host.docker.internal:11434/v1/"
+OPENAI_API_URL = "http://192.168.1.150:11434/v1/"
 BATCH_SIZE_BYTES = 32
 
-TRANSPORT_LEVEL_ENDPOINT = ""
-MOCK_TRANSPORT_LEVEL = True
+TRANSPORT_LEVEL_ENDPOINT = "http://10.105.237.166:8090/send"
 
 
 client = OpenAI(base_url=OPENAI_API_URL, api_key="")
@@ -21,26 +21,20 @@ buffers = defaultdict(bytes)
 
 
 class TranslationTaskData(BaseModel):
-    id: str = Field(..., description="Идентификатор перевода")
-    original_text: str = Field(..., description="Исходный текст")
-    to_lang: str = Field(..., description="Целевой язык перевода")
+    id: str = Field(description="Идентификатор перевода")
+    original_text: str = Field(description="Исходный текст")
+    to_lang: str = Field(description="Целевой язык перевода")
 
 
 class TranslationFragmentData(BaseModel):
-    id: str = Field(..., description="Идентификатор перевода")
-    fragment: bytes = Field(..., description="Фрагмент перевода")
-    number: int = Field(..., description="Номер текущего фрагмента перевода")
+    id: str = Field(description="Идентификатор перевода")
+    fragment: str = Field(description="Фрагмент перевода в Base64")
+    number: int = Field(description="Номер текущего фрагмента перевода")
     end: bool = Field(False, description="Признак последнего фрагмента перевода")
     error: bool = Field(False, description="Признак ошибки при переводе")
 
 
 async def send_translation_fragment(data: TranslationFragmentData) -> None:
-    if MOCK_TRANSPORT_LEVEL:
-        print(
-            f"Mock send translation fragment {data.number} for task {data.id}: {data.fragment.decode('utf-8', errors='ignore')}"
-        )
-        return
-
     async with AsyncClient(timeout=5.0) as http_client:
         response = await http_client.post(
             TRANSPORT_LEVEL_ENDPOINT,
@@ -77,14 +71,18 @@ async def translate_test(data: TranslationTaskData) -> None:
                 buffers[data.id] = buffers[data.id][BATCH_SIZE_BYTES:]
 
                 await send_translation_fragment(
-                    TranslationFragmentData(id=data.id, fragment=fragment, number=i)
+                    TranslationFragmentData(
+                        id=data.id,
+                        fragment=b64encode(fragment).decode("ascii"),
+                        number=i,
+                    )
                 )
 
         if buffers[data.id]:
             await send_translation_fragment(
                 TranslationFragmentData(
                     id=data.id,
-                    fragment=buffers[data.id],
+                    fragment=b64encode(buffers[data.id]).decode("ascii"),
                     number=i + 1,
                     end=True,
                 )
@@ -94,16 +92,13 @@ async def translate_test(data: TranslationTaskData) -> None:
             response = await http_client.post(
                 TRANSPORT_LEVEL_ENDPOINT,
                 json=TranslationFragmentData(
-                    id=data.id, fragment=b"", number=0, error=True
+                    id=data.id, fragment="", number=0, error=True
                 ).model_dump_json(),
             )
             try:
                 response.raise_for_status()
             except HTTPStatusError as e:
-                print(
-                    f"Failed to send error notification for translation task {data.id}"
-                    f" with status code {e.response.status_code}"
-                )
+                print(f"Got error, status code {e.response.status_code}")
 
 
 @app.post(
