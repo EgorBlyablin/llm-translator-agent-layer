@@ -3,14 +3,14 @@ from collections import defaultdict
 import functools
 
 import yaml
-from httpx import AsyncClient, HTTPStatusError
+from httpx import AsyncClient, HTTPStatusError, TimeoutException
 from fastapi import FastAPI, Response, BackgroundTasks
 from pydantic import BaseModel, Field
 from openai import AsyncOpenAI as OpenAI
 
 app = FastAPI(title="Агентный уровень LLM-переводчика")
 
-OPENAI_API_URL = "http://192.168.1.150:11434/v1/"
+OPENAI_API_URL = "http://localhost:11434/v1/"
 BATCH_SIZE_BYTES = 32
 
 TRANSPORT_LEVEL_ENDPOINT = "http://10.105.237.166:8090/send"
@@ -35,12 +35,19 @@ class TranslationFragmentData(BaseModel):
 
 
 async def send_translation_fragment(data: TranslationFragmentData) -> None:
-    async with AsyncClient(timeout=5.0) as http_client:
-        response = await http_client.post(
-            TRANSPORT_LEVEL_ENDPOINT,
-            json=data.model_dump_json(),
-        )
-        response.raise_for_status()
+    print(data.model_dump_json(indent=4))
+
+    try:
+        async with AsyncClient(timeout=5.0) as http_client:
+            response = await http_client.post(
+                TRANSPORT_LEVEL_ENDPOINT,
+                json=data.model_dump_json(),
+            )
+            response.raise_for_status()
+    except HTTPStatusError as e:
+        print(f"Got error, status code {e.response.status_code}")
+    except TimeoutException:
+        print("Transport layer is not responding, timeout occurred")
 
 
 async def translate_test(data: TranslationTaskData) -> None:
